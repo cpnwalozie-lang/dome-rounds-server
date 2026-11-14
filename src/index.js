@@ -3,8 +3,8 @@
 // (wss on port 443, so it looks like normal web traffic to strict networks). The room creator's game is still the referee;
 // the server passes each player's updates to the other player, and tells everyone when someone joins or leaves.
 
-const MAX_MSG = 8192;          // bytes; a game update is about 1 KB
-const MAX_PLAYERS = 2;         // 1v1 for now
+const MAX_MSG = 16384;         // bytes; a game update is about 1-3 KB (more with bots)
+const MAX_PLAYERS = 4;         // 1v1 or free-for-all (up to 4)
 
 export default {
   async fetch(req, env) {
