@@ -1,17 +1,27 @@
 // Dome Rounds game server.
-// Each room code gets its own Durable Object: a tiny always-on room that both players connect to over a secure WebSocket
-// (wss on port 443, so it looks like normal web traffic to strict networks). The room creator's game is still the referee;
-// the server passes each player's updates to the other player, and tells everyone when someone joins or leaves.
+// Each room gets its own Durable Object: a tiny room that players connect to over a secure WebSocket
+// (wss on port 443, so it looks like normal web traffic to strict networks). One player's game is the referee;
+// the server passes each player's updates on to everyone else, and says when someone joins or leaves.
+//
+// Two kinds of room:
+//  - code rooms ("dr-XXXXX"): 1v1, free-for-all and 2v2. Up to 4 players. The creator hosts; if they leave, the room closes.
+//  - Battle matches ("bt1-N"): public drop-in matches for up to 10 players. The first one in hosts. If the host
+//    leaves, the player who has been there longest takes over, so the match keeps going.
+//
+// Uses the WebSocket Hibernation API: a room with nobody talking goes to sleep and costs nothing, and the
+// "ping" keep-alives a lone player sends are answered without waking it.
 
-const MAX_MSG = 16384;         // bytes; a game update is about 1-3 KB (more with bots)
-const MAX_PLAYERS = 4;         // 1v1 or free-for-all (up to 4)
+const MAX_MSG = 32768;   // bytes; a game update is 1-3 KB (more when the host is also sending bots)
+const MAX_CODE_ROOM = 4; // 1v1, free-for-all (up to 4), 2v2
+const MAX_BATTLE = 10;   // Battle: up to 10 people (bots fill the rest on the host's screen)
+const isBattle = name => /^bt\d+-/.test(name);
 
 export default {
   async fetch(req, env) {
     const url = new URL(req.url);
     const cors = { 'Access-Control-Allow-Origin': '*' };
     if (url.pathname === '/' || url.pathname === '/health') {
-      return new Response(JSON.stringify({ ok: true, game: 'dome-rounds' }), { headers: { 'content-type': 'application/json', ...cors } });
+      return new Response(JSON.stringify({ ok: true, game: 'dome-rounds', battle: true }), { headers: { 'content-type': 'application/json', ...cors } });
     }
     const m = url.pathname.match(/^\/room\/([a-z0-9-]{1,48})$/);
     if (!m) return new Response('not found', { status: 404, headers: cors });
@@ -24,49 +34,85 @@ export default {
 export class Room {
   constructor(state, env) {
     this.state = state;
-    this.socks = new Map(); // peer -> { ws, role }
+    // keep-alive pings get their pong straight from the runtime, without waking the room
+    try { state.setWebSocketAutoResponse(new WebSocketRequestResponsePair('ping', 'pong')); } catch (e) {}
+  }
+
+  // everyone still connected, with who they are (kept on the socket so it survives the room sleeping)
+  live(except) {
+    const out = [];
+    for (const ws of this.state.getWebSockets()) {
+      if (ws === except) continue;
+      let a = null; try { a = ws.deserializeAttachment(); } catch (e) {}
+      if (!a || !a.peer || a.gone) continue;
+      out.push({ ws, a });
+    }
+    return out;
   }
 
   async fetch(req) {
     const url = new URL(req.url);
-    const role = url.searchParams.get('role') === 'host' ? 'host' : 'guest';
+    const name = decodeURIComponent(url.pathname.split('/').pop() || '');
+    const battle = isBattle(name);
+    let role = url.searchParams.get('role');
     const peer = (url.searchParams.get('peer') || '').replace(/[^a-z0-9]/gi, '').slice(0, 24) || Math.random().toString(36).slice(2, 12);
     const pair = new WebSocketPair();
     const [client, server] = Object.values(pair);
-    server.accept();
 
-    const fail = (code) => { try { server.send(JSON.stringify({ t: 'err', code })); server.close(1000, code); } catch (e) {} };
-    const hasHost = [...this.socks.values()].some(s => s.role === 'host');
-    if (role === 'host' && hasHost) fail('code_taken');
-    else if (role === 'guest' && !hasHost) fail('no_room');
-    else if (this.socks.size >= MAX_PLAYERS) fail('full');
-    else this.add(peer, role, server);
+    const list = this.live();
+    const host = list.find(s => s.a.role === 'host');
+    if (role === 'any') role = battle ? (host ? 'guest' : 'host') : 'guest';
+    else role = role === 'host' ? 'host' : 'guest';
+    let err = null;
+    if (role === 'host' && host) err = 'code_taken';
+    else if (role === 'guest' && !host) err = 'no_room';
+    else if (list.length >= (battle ? MAX_BATTLE : MAX_CODE_ROOM)) err = 'full';
+    if (err) {
+      server.accept();
+      try { server.send(JSON.stringify({ t: 'err', code: err })); server.close(1000, err); } catch (e) {}
+      return new Response(null, { status: 101, webSocket: client });
+    }
+
+    this.state.acceptWebSocket(server);
+    server.serializeAttachment({ peer, role, battle, at: Date.now() });
+    server.send(JSON.stringify({ t: 'hello', me: peer, role, host: role === 'host' ? peer : host.a.peer, peers: list.map(s => s.a.peer) }));
+    const msg = JSON.stringify({ t: 'joined', f: peer });
+    for (const s of list) { try { s.ws.send(msg); } catch (e) {} }
     return new Response(null, { status: 101, webSocket: client });
   }
 
-  add(peer, role, ws) {
-    const me = { ws, role };
-    this.socks.set(peer, me);
-    ws.send(JSON.stringify({ t: 'hello', me: peer, peers: [...this.socks.keys()].filter(p => p !== peer) }));
-    this.broadcast(peer, JSON.stringify({ t: 'joined', f: peer }));
-    ws.addEventListener('message', (ev) => {
-      const d = ev.data;
-      if (typeof d !== 'string' || d.length > MAX_MSG) return;
-      if (d === 'ping') { try { ws.send('pong'); } catch (e) {} return; }
-      // pass the player's latest state straight on, tagged with who sent it (no parsing needed)
-      this.broadcast(peer, '{"t":"p","f":"' + peer + '","d":' + d + '}');
-    });
-    const gone = () => {
-      if (this.socks.get(peer) !== me) return;
-      this.socks.delete(peer);
-      this.broadcast(peer, JSON.stringify({ t: 'left', f: peer }));
-      if (role === 'host') for (const [p, s] of this.socks) { try { s.ws.send(JSON.stringify({ t: 'left', f: peer })); s.ws.close(1000, 'host_left'); } catch (e) {} this.socks.delete(p); }
-    };
-    ws.addEventListener('close', gone);
-    ws.addEventListener('error', gone);
+  async webSocketMessage(ws, d) {
+    if (typeof d !== 'string' || d.length > MAX_MSG) return;
+    if (d === 'ping') { try { ws.send('pong'); } catch (e) {} return; }
+    let a = null; try { a = ws.deserializeAttachment(); } catch (e) {}
+    if (!a || !a.peer) return;
+    // pass the player's latest state straight on, tagged with who sent it (no parsing needed)
+    const out = '{"t":"p","f":"' + a.peer + '","d":' + d + '}';
+    for (const s of this.live(ws)) { try { s.ws.send(out); } catch (e) {} }
   }
 
-  broadcast(from, msg) {
-    for (const [p, s] of this.socks) { if (p === from) continue; try { s.ws.send(msg); } catch (e) {} }
+  async webSocketClose(ws) { this.gone(ws); }
+  async webSocketError(ws) { this.gone(ws); }
+
+  gone(ws) {
+    let a = null; try { a = ws.deserializeAttachment(); } catch (e) {}
+    if (!a || !a.peer || a.gone) return;
+    try { ws.serializeAttachment({ ...a, gone: true }); } catch (e) {}
+    try { ws.close(1000, 'bye'); } catch (e) {}
+    const rest = this.live(ws);
+    const left = JSON.stringify({ t: 'left', f: a.peer });
+    for (const s of rest) { try { s.ws.send(left); } catch (e) {} }
+    if (a.role !== 'host' || !rest.length) return;
+    if (a.battle) {
+      // hand the referee job to whoever has been in the match longest
+      rest.sort((x, y) => x.a.at - y.a.at);
+      const next = rest[0];
+      try { next.ws.serializeAttachment({ ...next.a, role: 'host' }); } catch (e) {}
+      const hm = JSON.stringify({ t: 'host', f: next.a.peer });
+      for (const s of rest) { try { s.ws.send(hm); } catch (e) {} }
+    } else {
+      // code rooms close when their creator leaves
+      for (const s of rest) { try { s.ws.close(1000, 'host_left'); } catch (e) {} }
+    }
   }
 }
