@@ -2,7 +2,7 @@
   "name": "dome-rounds-server",
   "version": "1.0.0",
   "private": true,
-  "description": "Online rooms for Dome Rounds: one Cloudflare Durable Object per room code, relaying the two players' updates over a secure WebSocket.",
+  "description": "Online rooms for Domes: one Cloudflare Durable Object per room code, relaying the two players' updates over a secure WebSocket.",
   "scripts": {
     "dev": "wrangler dev",
     "deploy": "wrangler deploy"

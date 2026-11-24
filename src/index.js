@@ -1,4 +1,4 @@
-// Dome Rounds game server.
+// Domes game server.
 // Each room gets its own Durable Object: a tiny room that players connect to over a secure WebSocket
 // (wss on port 443, so it looks like normal web traffic to strict networks). One player's game is the referee;
 // the server passes each player's updates on to everyone else, and says when someone joins or leaves.
@@ -236,14 +236,14 @@ function statsPage(d) {
   const n = v => Number(v || 0).toLocaleString('en-GB');
   const when = d.mostOnlineWhen ? new Date(d.mostOnlineWhen).toLocaleString('en-GB', { timeZone: 'Europe/London', dateStyle: 'medium', timeStyle: 'short' }) : 'not yet';
   const tile = (big, label, sub) => `<div class="t"><b>${big}</b><span>${label}</span>${sub ? `<small>${sub}</small>` : ''}</div>`;
-  return `<!doctype html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><meta http-equiv="refresh" content="10"><title>Dome Rounds · players</title>
+  return `<!doctype html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><meta http-equiv="refresh" content="10"><title>Domes · players</title>
 <style>body{margin:0;min-height:100vh;background:#1a0d2e;color:#f4ecff;font:16px/1.4 system-ui,sans-serif;display:flex;flex-direction:column;align-items:center;padding:28px 16px;box-sizing:border-box}
 h1{font-size:22px;margin:0 0 4px;color:#ffd23d}p{margin:0 0 22px;color:#bfa9e6;font-size:13px}
 .live{display:flex;align-items:center;gap:10px;font-size:15px;margin-bottom:18px}.live i{width:12px;height:12px;border-radius:50%;background:#3dff8a;box-shadow:0 0 0 0 rgba(61,255,138,.6);animation:p 1.6s infinite}@keyframes p{70%{box-shadow:0 0 0 10px rgba(61,255,138,0)}}
 .g{display:grid;grid-template-columns:repeat(auto-fit,minmax(150px,1fr));gap:12px;width:100%;max-width:720px}
 .t{background:#2a1548;border:2px solid #4a2a80;padding:14px 16px;display:flex;flex-direction:column}.t b{font-size:38px;line-height:1.05;color:#fff}.t span{font-size:13px;color:#d9c8ff;font-weight:600}.t small{font-size:12px;color:#9b86c4;margin-top:4px}
 .t.big{grid-column:1/-1;border-color:#ffd23d}.t.big b{font-size:64px;color:#ffd23d}h2{font-size:14px;color:#bfa9e6;margin:22px 0 10px;width:100%;max-width:720px;font-weight:600}</style></head><body>
-<h1>Dome Rounds · players</h1><p>Updates every 10 seconds · ${d.ukDate} (UK)</p>
+<h1>Domes · players</h1><p>Updates every 10 seconds · ${d.ukDate} (UK)</p>
 <div class="live"><i></i>Live now</div>
 <div class="g">${tile(n(d.online), 'online right now', d.backgroundTabs ? `plus ${n(d.backgroundTabs)} with the game in a background tab` : '')}${tile(n(d.publicMatches), 'in public matches')}${tile(n(d.privateRooms), 'in private rooms')}${tile(n(d.vsBots), 'playing bots')}${tile(n(d.onMenu), 'on the menu')}</div>
 <h2>Totals</h2>
